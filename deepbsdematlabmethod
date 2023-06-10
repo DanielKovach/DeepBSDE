@@ -1,0 +1,229 @@
+import numpy as np
+import time
+
+np.random.seed(1234)
+
+#solution to PDE
+def solution_u(x,t):
+    return np.exp(-3*t)*(np.square(x))
+
+#true gradient of solution
+def grad_u(x,t):
+    return np.exp(-3*t)*2*x
+
+#terminal condition
+def g(x,T):
+    return np.exp(-3*T)*(np.square(x))
+
+#gamma(x) = x^2
+def gamma(x):
+    return np.square(x)
+
+#sigma = Identity matrix
+def sigma(X):
+    return X
+
+#mu(x) = x
+def mu(X):
+    return X
+
+#nonlinear function in general, in our case 0
+def f(t,X,U,S):
+    return 0
+
+def ReLU(x):
+    return x * (x > 0)
+
+def dReLU(x):
+    return 1. * (x > 0)
+
+def sigmoid(x):
+  return 1 / (1 + np.exp(-1*x))
+
+def dsigmoid(x):
+  return sigmoid(x)*(1-sigmoid(x))
+
+#Approximate Brownian motion
+def BM_approx(N,M,T):
+    
+    dt = T/(N-1)
+    dx = np.sqrt(dt)
+    BM = np.zeros((N, M))
+
+    steps = 1-2*np.random.randint(2, size=(N,M))#random -1 or 1 for matrix of size N x M
+
+    for n in range(1,N):
+            BM[n,:] = np.add(BM[n-1,:], dx*(steps[n-1,:]))        
+  
+    return BM
+ 
+# Takes in a choice of gamma/sigma/mu and produces the X_t paths at times
+#t_n corresponding to a discrete set of omega's 
+def X_path(N,M,T,xi):
+
+    dt = T/(N-1)
+    X = np.zeros((N, M))
+    X[0,:] = xi
+    BM = BM_approx(N,M,T)
+    dW = np.zeros((N, M))
+    for n in range(1,N):
+            dW[n,:] = np.add(BM[n,:],-BM[n-1,:])
+            X[n,:] = np.add(X[n-1,:], np.add(dt*mu(X[n-1,:]), sigma(X[n-1,:])@dW[n,:]))
+  
+    return dW, X
+
+def build_NN(N, theta, num_neurons,x):
+    x = np.reshape(x,(1,x.size))
+    a = num_neurons
+    NN_list = list()
+    for n in range(N):
+        NN_n = n*(a**2+4*a+1)
+        NN_np1 = (n+1)*(a**2+4*a+1)
+        
+        W1 = np.reshape(theta[NN_n:NN_n+a], (a,1))
+        b1 = np.reshape(theta[NN_n+a:NN_n+2*a], (a,1))
+        W2 = np.reshape(theta[(NN_n+2*a):(NN_n+2*a+a**2)], (a,a))
+        b2 = np.reshape(theta[NN_n+2*a+a**2:NN_n+3*a+a**2],(a,1))
+        W3 = np.reshape(theta[NN_n+3*a+a**2:NN_n+4*a+a**2],(1,a))
+        b3 = theta[NN_np1-1]
+
+        #NN_i = np.add((W3@(ReLU(np.add((W2@ReLU(np.add((W1@x),b1))),b2)))),b3)
+        NN_i = np.add((W3@(sigmoid(np.add((W2@sigmoid(np.add((W1@x),b1))),b2)))),b3)
+
+        NN_list.append(NN_i)    
+
+    return NN_list
+
+
+#Function for the Gradient of a particular Neural Net
+def NN_grad(theta, num_neurons, x):
+
+    L = theta.size
+    a = num_neurons
+
+    #Build matrices and vectors
+    
+    W1 = np.reshape(theta[:a], (a,1))
+    b1 = np.reshape(theta[a:2*a], (a,1))
+    W2 = (np.reshape(theta[2*a:2*a+a**2], (a,a))).T
+    b2 = np.reshape(theta[2*a+a**2:3*a+a**2],(a,1))
+    W3 = np.reshape(theta[3*a+a**2:4*a+a**2],(1,a))
+    b3 = theta[-1]
+
+    #Build derivatives of matrices and vectors
+    DW1 = np.zeros((a,L))
+    DW1[:a,:a] = np.eye(a)
+
+    Db1 = np.zeros((a,L))
+    Db1[:a,a:2*a] = np.eye(a)
+
+    DW2 = np.zeros((a,a,L))
+    IDENTITY = np.eye(a**2)
+    count = 0
+    for j in range(2*a,2*a+a**2):
+         DW2[:,:,j] = np.reshape(IDENTITY[:,count],(a,a))
+         count += 1
+
+    Db2 = np.zeros((a,L))
+    Db2[:a,2*a+a**2:3*a+a**2] = np.eye(a)
+
+    DW3 = np.zeros((a,L))
+    DW3[:a,3*a+a**2:4*a+a**2] = np.eye(a)
+
+    Db3 = np.zeros((1,L))
+    Db3[0,L-1] = 1
+
+    V1 = np.add(W1*x,b1)
+    V2 = ReLU(V1)
+    #V2 = sigmoid(V1)
+    V3 = np.add((W2@V2),b2)
+    V4 = ReLU(V3)
+    #V4 = sigmoid(V3)
+
+    G = np.zeros(L)
+
+    for j in range(L):
+        #T1 = dReLU(V1)*np.add(x*(DW1[:,j]).reshape((a,1)),Db1[:,j].reshape((a,1)))
+        T1 = dsigmoid(V1)*np.add(x*(DW1[:,j]).reshape((a,1)),Db1[:,j].reshape((a,1)))
+        T2 = np.add((W2@T1),np.add(Db2[:,j].reshape((a,1)),(DW2[:,:,j]@V2)))
+        #T3 = dReLU(V3)*T2
+        T3 = dsigmoid(V3)*T2
+        T4 = np.add((W3@T3),np.add(((DW3[:,j]).reshape(1,5)@V4),Db3[:,j]))
+        G[j]=T4
+
+    return G
+
+######################################################################################
+#Main
+######################################################################################
+
+###########################################
+#Parameters
+###########################################
+
+N = 100 
+M = 100
+T = 1
+xi = 1
+
+num_neurons = 5 #number of neurons per layer
+num_parameters = num_neurons**2 + 4*num_neurons + 1 #per neural network
+learning_rate = 0.01 #same as [HJE18]
+
+
+#iteration_num = 40000 #same as [HJE18]
+iteration_num = 100
+loss = np.zeros(iteration_num)
+
+###########################################
+#Numpy
+###########################################
+
+theta = np.random.randn(N*num_parameters) #these are the weights of the NNs
+
+#Note that this theta contains the same parameters as theta = randn(1,(a**2+4*a+1)); with default random seed from Matlab. Used for gradient comparison
+#theta = np.array([0.537667139546100,	1.83388501459509,	-2.25884686100365,	0.862173320368121,	0.318765239858981,	-1.30768829630527,	-0.433592022305684,	0.342624466538650,	3.57839693972576,	2.76943702988488,	-1.34988694015652,	3.03492346633185,	0.725404224946106,	-0.0630548731896562,	0.714742903826096,	-0.204966058299775,	-0.124144348216312,	1.48969760778547,	1.40903448980048,	1.41719241342961,	0.671497133608081,	-1.20748692268504,	0.717238651328839,	1.63023528916473,	0.488893770311789,	1.03469300991786,	0.726885133383238,	-0.303440924786016,	0.293871467096658,	-0.787282803758638,	0.888395631757642,	-1.14707010696915,	-1.06887045816803,	-0.809498694424876,	-2.94428416199490,	1.43838029281510,	0.325190539456198,	-0.754928319169703,	1.37029854009523,	-1.71151641885370,	-0.102242446085491,	-0.241447041607358,	0.319206739165502,	0.312858596637428,	-0.864879917324457,	-0.0300512961962686])
+#print(NN_grad(theta,num_neurons, 1))
+
+dt = T/(N-1) #time step
+X_p = X_path(N,M,T,xi)
+dW = X_p[0] #BM(t+1)-BM(t)
+X = X_p[1] #X_t
+U_hat = np.zeros((N,M))#U(X_t,t) approximate solution to PDE 
+
+for z in range(iteration_num):
+
+    start_time = time.time()
+
+    U_hat[0,:] = build_NN(N, theta, num_neurons,X[0,:])[0] #initialize first element of each sample path
+
+    gu = np.zeros((N,M)) #initialize and clear gradients
+
+    for n in range(N-1):
+         gu[n,:] = build_NN(N, theta, num_neurons,X[n,:])[n+1] #set gradients to each NN
+
+    for m in range(M-1):
+         for n in range(N-1):
+              U_hat[n+1,m] = U_hat[n,m] + gu[n,m]*sigma(X[n,m])*dW[n,m] #forward iteration
+
+    loss[z] = (1/(2*M))*np.sum(np.square(np.subtract(g(X[N-1,:],T),U_hat[N-1,:]))) #Note that loss is based off the final element of forward
+    
+    DL = np.zeros((1,N*num_parameters)) #initialize weight update vector
+    D_theta_U_hat = np.zeros((N*num_parameters, M)) #initialize matrix of u_theta
+
+    for m in range(M):
+        D_theta_U_hat[0:num_parameters, m] = NN_grad(theta[0:num_parameters], num_neurons, xi) #initialize first guess of gradients
+
+    for j in range(num_parameters):
+            DL[0,j] = ((-1/M)*np.sum(np.subtract(g(X[N-1,:],T),U_hat[N-1,:])*D_theta_U_hat[j,:])) #calculate weight update vector for NN
+           
+    for n in range(1,N):
+        for m in range(M):
+            D_theta_U_hat[(n-1)*num_parameters:n*num_parameters,m] = dW[n,m]*sigma(X[n-1,m])*NN_grad(theta[(n-1)*(num_parameters):n*(num_parameters)],num_neurons,X[n-1,m]) #set rest of gradients
+        
+        for j in range((n-1)*(num_parameters),n*(num_parameters)):
+            DL[0,j] = ((-1/M)*np.sum(np.subtract(g(X[N-1,:],T),U_hat[N-1,:])*D_theta_U_hat[j,:])) #calculate remaining elements of the stack of weight update vectors
+
+    theta = np.subtract(theta,learning_rate*DL[0,:]) #update weights
+
+    print(f"Loss = {round(loss[z],5)} after iteration {z+1} completed in {round(time.time()-start_time,2)}s.")
